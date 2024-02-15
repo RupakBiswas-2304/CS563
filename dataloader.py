@@ -56,6 +56,8 @@ class Dataloader:
 if __name__ == '__main__':
     d = Dataloader()
     d.load('Brown_train.txt')
-    # print(d.train[0].tokens)
-    # print(d.train[0].tags)
-    print(d.train[-1], len(d.train))
+    for (train, test) in d.n_fold(5):
+        print(len(train), len(test))
+        print(train[0])
+        print(test[0])
+        print()

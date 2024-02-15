@@ -2,7 +2,9 @@ import enum
 from dataloader import Dataloader
 import multiprocessing
 import argparse
-
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
 class ModelType(enum.Enum):
     Bigram = 1
     Trigram = 2
@@ -218,6 +220,10 @@ class HMM:
 
     def test(self, test_data):
         report = {}
+        matrix = {}
+        for st in self.states:
+            matrix[st] = {st: 0 for st in self.states}
+
         for st in self.states:
             report[st] = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
 
@@ -227,6 +233,8 @@ class HMM:
             pred = self.predict(data.tokens[2:])
             total_pred += len(pred)
             for i in range(len(data.tags[2:])):
+                matrix[data.tags[i+2]][pred[i]] += 1
+
                 if data.tags[i+2] == pred[i]:
                     report[data.tags[i+2]]["TP"] += 1
                     total_tp += 1
@@ -243,33 +251,58 @@ class HMM:
             report[st]["precision"] = report[st]["TP"] / (report[st]["TP"] + report[st]["FP"])
             report[st]["recall"] = report[st]["TP"] / (report[st]["TP"] + report[st]["FN"])
             report[st]["f1"] = 2 * report[st]["precision"] * report[st]["recall"] / (report[st]["precision"] + report[st]["recall"])
-        return report, total_tp/total_pred
+        return report, total_tp/total_pred, matrix
 
 
-def worker_b(data):
-    worker(ModelType.Bigram, data)
-
-def worker_t(data):
-    worker(ModelType.Trigram, data)
-
-def worker(model_type, data):
+def worker(model_type, data, lock, GLOBAL_CONF_MATRIX):
     worker_id = multiprocessing.current_process().name
     train_data, test_data = data
     model = HMM(model_type)
     model.train(train_data)
 
-    report, gloabl_accurecy = model.test(test_data)
+    report, gloabl_accurecy, matrix = model.test(test_data)
     # print(report)
     print("State\t\tAccuracy\tPrecision\tRecall\t\tF1 Score")
     for st in report:
         print(f"{st}\t\t{report[st]['accuracy']:.6f}\t{report[st]['precision']:.6f}\t{report[st]['recall']:.6f}\t{report[st]['f1']:.6f}")
     print(f"Worker {worker_id} done. Total Accurecy : {gloabl_accurecy}\n\n")
+    
+    with lock:
+        GLOBAL_CONF_MATRIX[worker_id] = matrix
+
+def save_conf_matrix(matrix, show,  filename = "conf_matrix.png"):
+    lables = []
+    for _, values in matrix.items():
+        lables = list(values.keys())
+        break
+
+    rev_map = { lables[i] : i for i in range(len(lables))}
+
+    conf_mat = np.zeros((len(lables), len(lables)))
+    for _, values in matrix.items():
+        for key, value in values.items():
+            conf_mat[rev_map[key], :] += np.array(list(value.values()))
+
+    # normalize
+    conf_mat = conf_mat / conf_mat.sum(axis=1, keepdims=True)
+
+    # show matrix with seaborn
+    plt.figure(figsize=(10,7))
+    sns.heatmap(conf_mat, cmap="YlGnBu", xticklabels=lables, yticklabels=lables)
+    plt.xlabel('Predicted')
+    plt.ylabel('Truth')
+    plt.title('Confusion Matrix')
+    plt.savefig(filename)
+
+    if show:
+        plt.show()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="HMM")
     parser.add_argument("--n", type=int, default=5, help="Number of workers")
     parser.add_argument("--filename", type=str, default="Brown_train.txt", help="The filename of the data to be loaded.")
     parser.add_argument("--mode", type=str, default="Bigram", help="The type of HMM model (Bigram or Trigram).")
+    parser.add_argument("--show_matrix", type=bool, default=False, help="Show confusion matrix")
 
     args = parser.parse_args()
 
@@ -277,15 +310,24 @@ if __name__ == "__main__":
     data.load(args.filename, 80)
     n = args.n
 
-    pool = multiprocessing.Pool(n)
     train_test_itreable = data.n_fold(n)
+    process = []
 
-    if args.mode == "Bigram":
-        pool.map(worker_b, train_test_itreable)
-    else:
-        pool.map(worker_t, train_test_itreable)
+    manager = multiprocessing.Manager()
+    GLOBAL_CONF_MATRIX = manager.dict()
+    lock = manager.Lock()
+
+    for data in data.n_fold(n):
+        if args.mode == "Bigram":
+            p = multiprocessing.Process(target=worker, args=(ModelType.Bigram,data, lock, GLOBAL_CONF_MATRIX))
+        else:
+            p = multiprocessing.Process(target=worker, args=(ModelType.Trigram, data, lock, GLOBAL_CONF_MATRIX))
+        process.append(p)
+        p.start()
     
-    pool.close()
-    pool.join()
+    for p in process:
+        p.join()
 
-        
+
+    print("Confusion Matrix")
+    save_conf_matrix(GLOBAL_CONF_MATRIX, args.show_matrix)
