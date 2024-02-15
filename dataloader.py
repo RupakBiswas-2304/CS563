@@ -7,7 +7,7 @@ class Data:
         self.tags = ["START", "START"]
 
         # remove '/r/n' or '/n' from the last word
-        if line[-1][-2:] == '\r\n' or line[-1][-1] == '\n':
+        if line[-1][-2:] == '\r\n' or len(line[-1]) == 0  or line[-1][-1] == '\n':
             line.pop(-1)
 
         for word in line:
